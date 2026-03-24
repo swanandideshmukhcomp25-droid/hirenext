@@ -1,0 +1,42 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls C:/Users/swana/Downloads/competition/careerpilot-ai/frontend/.env*)",
+      "Bash(npm install:*)",
+      "Bash(curl -s http://localhost:5000/health)",
+      "Bash(python -m json.tool)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:3000)",
+      "Bash(pip show:*)",
+      "Bash(pg_isready)",
+      "Bash(psql --version)",
+      "Bash(docker --version)",
+      "Bash(docker run:*)",
+      "Bash(pip install:*)",
+      "Bash(docker exec:*)",
+      "Bash(python -m pytest tests/test_extractor.py -v --tb=short)",
+      "Bash(python -m pytest tests/test_extractor.py -v --tb=short -s)",
+      "Bash(curl -s http://localhost:3000 -o /dev/null -w \"Frontend: %{http_code}\\\\n\")",
+      "Bash(curl -s http://localhost:8000/health)",
+      "Bash(curl -s http://localhost:8001/health)",
+      "Bash(netstat -ano)",
+      "Bash(curl -s -m 5 http://127.0.0.1:8001/health)",
+      "Bash(python -c \"import urllib.request; print\\(urllib.request.urlopen\\(''http://127.0.0.1:8001/health''\\).read\\(\\).decode\\(\\)\\)\")",
+      "Bash(python -c \":*)",
+      "Bash(taskkill //F //PID 29200 //PID 36648 //PID 46544 //PID 54020)",
+      "Bash(tasklist)",
+      "Bash(docker stop:*)",
+      "Bash(docker rm:*)",
+      "Bash(echo 'FRONTEND DOWN' python -c \"import urllib.request; print\\(''''PYTHON UP'''' if ''''ok'''' in urllib.request.urlopen\\(''''http://127.0.0.1:8001/health'''',timeout=3\\).read\\(\\).decode\\(\\) else ''''PYTHON DOWN''''\\)\")",
+      "Bash(curl -s -X POST http://localhost:5000/api/upload -F \"resume=@/tmp/test_resume.pdf\" -F \"job_title=Python Developer\" -F \"location=Bangalore\" --max-time 30)",
+      "Bash(echo 'BACKEND: DOWN' curl -s -o /dev/null -w %{http_code} http://localhost:3000)",
+      "Bash(echo \"EXIT:$?\")",
+      "Bash(findstr \":5000\\\\|:3000\\\\|:8001\\\\|:5435\")",
+      "Bash(findstr LISTENING)",
+      "Bash(docker ps:*)",
+      "Bash(curl -s http://localhost:3000 -o /dev/null -w \"Frontend HTTP: %{http_code}\")",
+      "Bash(curl -s \"http://localhost:8001/jobs/search?keywords=frontend+developer&skills=React,TypeScript&limit=3\")",
+      "Bash(python3 -c \":*)",
+      "mcp__Claude_Preview__preview_start"
+    ]
+  }
+}
