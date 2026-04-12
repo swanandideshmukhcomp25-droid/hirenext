@@ -12,8 +12,9 @@ interface ShareButtonsProps {
 export default function ShareButtons({ url, name, role, score }: ShareButtonsProps) {
   const [copied, setCopied] = useState(false);
 
+  const article   = /^[aeiou]/i.test(role) ? 'an' : 'a';
   const scoreText = score ? ` with a ${score}/100 resume score` : '';
-  const shareText = `I just analysed my resume on HireNext${scoreText}. See my top job matches as a ${role} →`;
+  const shareText = `I just analysed my resume on HireNext${scoreText}. See my top job matches as ${article} ${role} →`;
 
   const linkedin = `https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent(url)}`;
   const whatsapp = `https://wa.me/?text=${encodeURIComponent(`${shareText} ${url}`)}`;
@@ -25,7 +26,6 @@ export default function ShareButtons({ url, name, role, score }: ShareButtonsPro
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
-      // fallback: select a hidden input
       const el = document.createElement('input');
       el.value = url;
       document.body.appendChild(el);
@@ -42,17 +42,15 @@ export default function ShareButtons({ url, name, role, score }: ShareButtonsPro
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
-    padding: '9px 14px',
+    padding: '10px 14px',
     borderRadius: 10,
     fontSize: 12,
     fontWeight: 700,
     textDecoration: 'none',
     cursor: 'pointer',
-    border: 'none',
     transition: 'opacity 0.15s',
-    flex: 1,
-    minWidth: 0,
     whiteSpace: 'nowrap' as const,
+    boxSizing: 'border-box' as const,
   };
 
   return (
@@ -60,7 +58,9 @@ export default function ShareButtons({ url, name, role, score }: ShareButtonsPro
       <p style={{ fontSize: 10, fontWeight: 700, color: '#475569', letterSpacing: '0.08em', marginBottom: 10 }}>
         SHARE YOUR RESULTS
       </p>
-      <div style={{ display: 'flex', gap: 8 }}>
+      {/* 2×2 grid — no overflow on any screen size */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+
         {/* Copy link */}
         <button
           onClick={copyLink}
@@ -71,11 +71,7 @@ export default function ShareButtons({ url, name, role, score }: ShareButtonsPro
             border: `1px solid ${copied ? 'rgba(52,211,153,0.3)' : 'rgba(255,255,255,0.08)'}`,
           }}
         >
-          {copied ? (
-            <>{checkIcon} Copied!</>
-          ) : (
-            <>{linkIcon} Copy link</>
-          )}
+          {copied ? <>{checkIcon} Copied!</> : <>{linkIcon} Copy link</>}
         </button>
 
         {/* LinkedIn */}
@@ -111,7 +107,7 @@ export default function ShareButtons({ url, name, role, score }: ShareButtonsPro
             border: '1px solid rgba(255,255,255,0.1)',
           }}
         >
-          {xIcon} Post
+          {xIcon} Post on X
         </a>
       </div>
     </div>

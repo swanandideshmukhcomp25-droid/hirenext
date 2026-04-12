@@ -37,40 +37,24 @@ async function getCard(slug: string): Promise<ProfileCard | null> {
   }
 }
 
-/* ── Metadata ──────────────────────────────────────────────────── */
-export async function generateMetadata(
-  { params }: { params: { slug: string } }
-): Promise<Metadata> {
-  const card = await getCard(params.slug);
-  if (!card) return { title: 'Profile not found — HireNext' };
+/* ── Helpers ───────────────────────────────────────────────────── */
 
-  const scoreText = card.resume_score ? ` · Resume score: ${card.resume_score}/100` : '';
-  const matchText = card.top_match
-    ? `Top match: ${card.top_match.company} (${card.top_match.match_score}% fit)`
-    : `${card.experience_years} yrs experience`;
-
-  const desc = `${matchText}${scoreText}. See ${card.name}'s AI-ranked job matches on HireNext.`;
-  const pageUrl = `${FRONTEND_URL}/profile/${card.slug}`;
-
-  return {
-    title: `${card.name} · ${card.target_role} — HireNext`,
-    description: desc,
-    openGraph: {
-      title: `${card.name} · ${card.target_role}`,
-      description: desc,
-      siteName: 'HireNext',
-      type: 'profile',
-      url: pageUrl,
-    },
-    twitter: {
-      card: 'summary',
-      title: `${card.name} · ${card.target_role} — HireNext`,
-      description: desc,
-    },
-  };
+/** Convert "SWANANDI DESHMUKH" or "swanandi deshmukh" → "Swanandi Deshmukh" */
+function toTitleCase(str: string): string {
+  return (str || '').toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
 }
 
-/* ── Helpers ───────────────────────────────────────────────────── */
+/**
+ * If target_role is suspiciously short (e.g. "AI", "ML", "SWE"),
+ * fall back to the top match job title so we always display something meaningful.
+ */
+function cleanRole(role: string, topMatch: TopMatch | null): string {
+  if (!role || role.trim().length <= 3) {
+    return topMatch?.title || role || 'Developer';
+  }
+  return role;
+}
+
 function scoreColor(score: number) {
   if (score >= 80) return '#34d399';
   if (score >= 65) return '#60a5fa';
@@ -104,16 +88,54 @@ function ScoreRing({ score, size = 72 }: { score: number; size?: number }) {
   );
 }
 
+/* ── Metadata ──────────────────────────────────────────────────── */
+export async function generateMetadata(
+  { params }: { params: { slug: string } }
+): Promise<Metadata> {
+  const card = await getCard(params.slug);
+  if (!card) return { title: 'Profile not found — HireNext' };
+
+  const displayName = toTitleCase(card.name);
+  const displayRole = cleanRole(card.target_role, card.top_match);
+  const scoreText   = card.resume_score ? ` · Resume score: ${card.resume_score}/100` : '';
+  const matchText   = card.top_match
+    ? `Top match: ${card.top_match.company} (${card.top_match.match_score}% fit)`
+    : `${card.experience_years} yrs experience`;
+
+  const desc    = `${matchText}${scoreText}. See ${displayName}'s AI-ranked job matches on HireNext.`;
+  const pageUrl = `${FRONTEND_URL}/profile/${card.slug}`;
+  const ogImage = `${FRONTEND_URL}/api/og/${card.slug}`;
+
+  return {
+    title: `${displayName} · ${displayRole} — HireNext`,
+    description: desc,
+    openGraph: {
+      title: `${displayName} · ${displayRole}`,
+      description: desc,
+      siteName: 'HireNext',
+      type: 'profile',
+      url: pageUrl,
+      images: [{ url: ogImage, width: 1200, height: 630, alt: `${displayName} — HireNext profile` }],
+    },
+    twitter: {
+      card: 'summary_large_image',
+      title: `${displayName} · ${displayRole} — HireNext`,
+      description: desc,
+      images: [ogImage],
+    },
+  };
+}
+
 /* ── Page ──────────────────────────────────────────────────────── */
 export default async function ProfilePage({ params }: { params: { slug: string } }) {
   const card = await getCard(params.slug);
   if (!card) notFound();
 
-  const topSkills  = (card.skills || []).slice(0, 6);
-  const profileUrl = `${FRONTEND_URL}/profile/${card.slug}`;
-
-  // First name only for "beat X's score" text
-  const firstName = card.name?.split(' ')[0] || card.name;
+  const displayName = toTitleCase(card.name);
+  const displayRole = cleanRole(card.target_role, card.top_match);
+  const topSkills   = (card.skills || []).slice(0, 6);
+  const profileUrl  = `${FRONTEND_URL}/profile/${card.slug}`;
+  const firstName   = displayName.split(' ')[0];
 
   return (
     <div style={{
@@ -138,13 +160,13 @@ export default async function ProfilePage({ params }: { params: { slug: string }
         boxShadow: '0 0 0 1px rgba(99,102,241,0.05), 0 24px 64px rgba(0,0,0,0.6)',
       }}>
 
-        {/* Header gradient strip */}
+        {/* Header */}
         <div style={{
           padding: '20px 20px 18px',
           background: 'linear-gradient(135deg, rgba(99,102,241,0.14) 0%, rgba(124,58,237,0.07) 100%)',
           borderBottom: '1px solid rgba(99,102,241,0.12)',
         }}>
-          {/* Logo */}
+          {/* Logo row */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 20 }}>
             <div style={{
               width: 26, height: 26, borderRadius: 7,
@@ -165,9 +187,9 @@ export default async function ProfilePage({ params }: { params: { slug: string }
             </span>
           </div>
 
-          {/* Name + role */}
+          {/* Name + role — always title-cased, role always meaningful */}
           <h1 style={{ fontSize: 22, fontWeight: 900, color: '#f1f5f9', margin: 0, lineHeight: 1.2 }}>
-            {card.name}
+            {displayName}
           </h1>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
             <span style={{
@@ -177,10 +199,10 @@ export default async function ProfilePage({ params }: { params: { slug: string }
               color: '#a5b4fc',
               border: '1px solid rgba(99,102,241,0.25)',
             }}>
-              {card.target_role}
+              {displayRole}
             </span>
             {card.experience_years != null && (
-              <span style={{ fontSize: 12, color: '#64748b' }}>
+              <span style={{ fontSize: 12, color: '#94a3b8' }}>
                 {card.experience_years} yr{card.experience_years !== 1 ? 's' : ''} exp
               </span>
             )}
@@ -209,10 +231,9 @@ export default async function ProfilePage({ params }: { params: { slug: string }
           </div>
         )}
 
-        {/* Stats row — resume score + top match */}
+        {/* Stats row */}
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
 
-          {/* Resume score */}
           {card.resume_score != null && (
             <div style={{
               padding: '18px 16px',
@@ -229,7 +250,6 @@ export default async function ProfilePage({ params }: { params: { slug: string }
             </div>
           )}
 
-          {/* Top match */}
           {card.top_match && (
             <div style={{ padding: '18px 16px', display: 'flex', flexDirection: 'column', gap: 8 }}>
               <p style={{ fontSize: 10, fontWeight: 700, color: '#475569', letterSpacing: '0.08em', margin: 0 }}>
@@ -249,13 +269,13 @@ export default async function ProfilePage({ params }: { params: { slug: string }
                   <span style={{ fontSize: 10, color: scoreColor(card.top_match.match_score) + '99', fontWeight: 600 }}>fit</span>
                 </div>
                 <p style={{ fontSize: 13, fontWeight: 700, color: '#e2e8f0', margin: 0 }}>{card.top_match.company}</p>
-                <p style={{ fontSize: 11, color: '#64748b', margin: '2px 0 0' }}>{card.top_match.title}</p>
+                <p style={{ fontSize: 11, color: '#94a3b8', margin: '2px 0 0' }}>{card.top_match.title}</p>
               </div>
             </div>
           )}
         </div>
 
-        {/* Top 3 matches (when available from new share flow) */}
+        {/* Top 3 matches (new share flow) */}
         {card.top_match?.all_matches && card.top_match.all_matches.length > 1 && (
           <div style={{ padding: '16px 20px', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
             <p style={{ fontSize: 10, fontWeight: 700, color: '#475569', letterSpacing: '0.08em', marginBottom: 12 }}>
@@ -269,14 +289,12 @@ export default async function ProfilePage({ params }: { params: { slug: string }
                   background: 'rgba(255,255,255,0.02)',
                   border: '1px solid rgba(255,255,255,0.05)',
                 }}>
-                  <span style={{
-                    fontSize: 12, fontWeight: 900,
-                    color: scoreColor(m.match_score),
-                    minWidth: 36,
-                  }}>{m.match_score}%</span>
+                  <span style={{ fontSize: 12, fontWeight: 900, color: scoreColor(m.match_score), minWidth: 36 }}>
+                    {m.match_score}%
+                  </span>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <p style={{ fontSize: 12, fontWeight: 700, color: '#e2e8f0', margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.company}</p>
-                    <p style={{ fontSize: 11, color: '#64748b', margin: '1px 0 0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.title}</p>
+                    <p style={{ fontSize: 11, color: '#94a3b8', margin: '1px 0 0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.title}</p>
                   </div>
                   <span style={{
                     fontSize: 10, fontWeight: 700,
@@ -292,12 +310,12 @@ export default async function ProfilePage({ params }: { params: { slug: string }
           </div>
         )}
 
-        {/* Share buttons (client component) */}
+        {/* Share buttons */}
         <div style={{ paddingTop: 18, borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
           <ShareButtons
             url={profileUrl}
-            name={card.name}
-            role={card.target_role}
+            name={displayName}
+            role={displayRole}
             score={card.resume_score}
           />
         </div>
@@ -320,15 +338,16 @@ export default async function ProfilePage({ params }: { params: { slug: string }
               ? `Can you beat ${firstName}'s ${card.resume_score}/100 score? →`
               : 'Get your AI job matches — it\'s free →'}
           </Link>
-          <p style={{ fontSize: 11, color: '#334155', marginTop: 10 }}>
+          {/* Fixed: was #334155 (near-invisible). Now readable. */}
+          <p style={{ fontSize: 11, color: '#64748b', marginTop: 10 }}>
             AI-ranked from 5,000+ live jobs · No signup needed · Free forever
           </p>
         </div>
       </div>
 
-      {/* Footer */}
-      <p style={{ marginTop: 24, fontSize: 12, color: '#1e293b' }}>
-        Powered by <Link href="/" style={{ color: '#475569', textDecoration: 'none' }}>HireNext</Link>
+      {/* Footer — fixed: was #1e293b (invisible on dark bg) */}
+      <p style={{ marginTop: 24, fontSize: 12, color: '#475569' }}>
+        Powered by <Link href="/" style={{ color: '#64748b', textDecoration: 'none' }}>HireNext</Link>
       </p>
     </div>
   );
