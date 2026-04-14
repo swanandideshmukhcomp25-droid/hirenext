@@ -6,8 +6,7 @@ Scrape → Extract → Deduplicate → Persist → Expire stale jobs
 Sources:
   - Indeed    (via python-jobspy)
   - LinkedIn  (via python-jobspy)
-  - Glassdoor (via python-jobspy)
-  - YC / Work at a Startup (custom requests scraper)
+  - Remotive  (free remote jobs API — replaces YC/Glassdoor)
 
 Runs every 24 hours via GitHub Actions cron.
 """
@@ -53,58 +52,72 @@ DEFAULT_LOCATIONS = [
     "Delhi", "Pune", "Chennai", "Noida", "Gurgaon",
 ]
 
-# ── All jobspy-supported sources ──────────────────────────────────
-DEFAULT_SOURCES = ["indeed", "linkedin", "glassdoor"]
+# ── jobspy sources (Glassdoor removed — 403s on all GitHub Actions IPs) ──
+DEFAULT_SOURCES = ["indeed", "linkedin"]
 
 
 # ─────────────────────────────────────────────────────────────────
-# YC / Work at a Startup scraper
+# Remotive API scraper (free, no auth, remote tech jobs)
 # ─────────────────────────────────────────────────────────────────
 
-def _scrape_yc() -> list[dict]:
+_REMOTIVE_CATEGORIES = [
+    "software-dev", "data", "devops", "product", "mobile",
+    "qa", "backend", "frontend",
+]
+
+def _scrape_remotive() -> list[dict]:
     """
-    Fetch jobs from YC's Work at a Startup public API.
-    Returns cleaned job dicts ready for insert_jobs_batch.
+    Fetch remote jobs from Remotive's free public API.
+    Covers software-dev, data, devops, mobile, qa, etc.
     """
     jobs = []
+    seen_urls: set = set()
     try:
-        url = "https://www.workatastartup.com/jobs.json"
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read().decode())
+        for category in _REMOTIVE_CATEGORIES:
+            url = f"https://remotive.com/api/remote-jobs?category={category}&limit=50"
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            try:
+                with urllib.request.urlopen(req, timeout=15) as resp:
+                    data = json.loads(resp.read().decode())
+                listings = data.get("jobs", [])
+                log.info(f"[remotive] {category}: {len(listings)} raw listings")
 
-        listings = data if isinstance(data, list) else data.get("jobs", [])
-        log.info(f"[yc] fetched {len(listings)} raw listings")
+                for item in listings:
+                    job_url = item.get("url", "") or ""
+                    if not job_url or job_url in seen_urls:
+                        continue
+                    seen_urls.add(job_url)
 
-        for item in listings:
-            title   = item.get("title", "") or ""
-            company = (item.get("company") or {}).get("name", "") or ""
-            url_    = item.get("url", "") or f"https://www.workatastartup.com/jobs/{item.get('id','')}"
-            desc    = item.get("description", "") or ""
-            loc     = item.get("location", "") or "Remote"
-            remote  = bool(item.get("remote") or "remote" in loc.lower())
+                    title   = item.get("title", "") or ""
+                    company = item.get("company_name", "") or ""
+                    desc    = item.get("description", "") or ""
+                    tags    = [t.lower() for t in (item.get("tags") or [])]
 
-            if not title or not company:
-                continue
+                    if not title or not company:
+                        continue
 
-            job = {
-                "title":       title,
-                "company":     company,
-                "location":    loc,
-                "job_url":     url_,
-                "description": desc[:3000],
-                "date_posted": str(item.get("created_at", "")),
-                "job_type":    "full-time",
-                "source":      "yc",
-                "is_remote":   remote,
-                "work_mode":   "remote" if remote else "onsite",
-                "company_domain": "startup",
-            }
-            jobs.append(extract(job))
+                    job = {
+                        "title":          title,
+                        "company":        company,
+                        "location":       item.get("candidate_required_location") or "Remote",
+                        "job_url":        job_url,
+                        "description":    desc[:3000],
+                        "date_posted":    (item.get("publication_date") or "")[:10],
+                        "job_type":       "full-time",
+                        "source":         "remotive",
+                        "skills":         tags,
+                        "is_remote":      True,
+                        "work_mode":      "remote",
+                        "company_domain": "tech",
+                    }
+                    jobs.append(extract(job))
+            except Exception as e:
+                log.warning(f"[remotive] category '{category}' failed: {e}")
+            time.sleep(0.5)
 
-        log.info(f"[yc] {len(jobs)} valid jobs after cleaning")
+        log.info(f"[remotive] {len(jobs)} total valid jobs")
     except Exception as e:
-        log.warning(f"[yc] scraper failed: {e}")
+        log.warning(f"[remotive] scraper failed: {e}")
 
     return jobs
 
@@ -168,11 +181,11 @@ def run_pipeline(
 
             time.sleep(delay)
 
-    # ── Step 2: YC jobs ───────────────────────────────────────────
-    log.info("[pipeline] Scraping YC / Work at a Startup...")
-    yc_jobs = _scrape_yc()
-    all_raw_jobs.extend(yc_jobs)
-    log.info(f"[pipeline] YC added {len(yc_jobs)} jobs (total: {len(all_raw_jobs)})")
+    # ── Step 2: Remotive remote jobs ──────────────────────────────
+    log.info("[pipeline] Scraping Remotive (remote jobs)...")
+    remotive_jobs = _scrape_remotive()
+    all_raw_jobs.extend(remotive_jobs)
+    log.info(f"[pipeline] Remotive added {len(remotive_jobs)} jobs (total: {len(all_raw_jobs)})")
 
     total_scraped = len(all_raw_jobs)
     log.info(f"[pipeline] Scraping done — {total_scraped} raw, {len(failed_queries)} failed queries")
@@ -226,5 +239,5 @@ def run_pipeline(
         "failed_queries":   failed_queries[:20],
         "duration_seconds": duration,
         "queries_run":      total_queries,
-        "sources":          site_list + ["yc"],
+        "sources":          site_list + ["remotive"],
     }
