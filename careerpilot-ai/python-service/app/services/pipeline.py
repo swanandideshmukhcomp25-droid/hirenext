@@ -6,8 +6,8 @@ Scrape → Extract → Deduplicate → Persist → Expire stale jobs
 Sources:
   - Indeed    (via python-jobspy)
   - LinkedIn  (via python-jobspy)
-  - Glassdoor (via python-jobspy + free rotating proxy to bypass 403)
-  - YC / Work at a Startup (scrapes __NEXT_DATA__ from page HTML)
+  - Glassdoor (via python-jobspy + ScraperAPI residential proxy)
+  - HN Hiring (Hacker News "Who is Hiring" via Algolia — YC startup jobs)
 
 Runs every 24 hours via GitHub Actions cron.
 """
@@ -57,54 +57,22 @@ DEFAULT_SOURCES = ["indeed", "linkedin", "glassdoor"]
 
 
 # ─────────────────────────────────────────────────────────────────
-# Glassdoor proxy helper
-# GitHub Actions IPs are datacenter IPs — Glassdoor 403s them.
-# We fetch a fresh free HTTPS proxy from geonode and pass it to jobspy.
+# Glassdoor via ScraperAPI
+# Free tier: 1000 calls/month, no credit card.
+# Sign up at scraperapi.com → copy API key → add as SCRAPERAPI_KEY
+# GitHub secret. Without the key, Glassdoor is silently skipped.
 # ─────────────────────────────────────────────────────────────────
 
-_glassdoor_proxy: str | None = None
-
-def _get_free_proxy() -> str | None:
+def _scrape_glassdoor(term: str, loc: str, results: int, hours_old: int) -> list[dict]:
     """
-    Fetch a fresh HTTPS proxy from geonode's free proxy API.
-    Returns 'http://ip:port' or None on failure.
+    Run a jobspy Glassdoor query routed through ScraperAPI.
+    ScraperAPI rotates residential IPs so Glassdoor can't block us.
     """
-    try:
-        url = (
-            "https://proxylist.geonode.com/api/proxy-list"
-            "?limit=10&page=1&sort_by=lastChecked&sort_type=desc"
-            "&protocols=https&anonymityLevel=elite,anonymous"
-        )
-        resp = requests.get(url, timeout=10)
-        data = resp.json()
-        proxies = data.get("data", [])
-        for p in proxies:
-            ip   = p.get("ip")
-            port = p.get("port")
-            if ip and port:
-                proxy = f"http://{ip}:{port}"
-                log.info(f"[glassdoor] using proxy: {proxy}")
-                return proxy
-    except Exception as e:
-        log.warning(f"[glassdoor] failed to fetch proxy: {e}")
-    return None
+    api_key = os.getenv("SCRAPERAPI_KEY", "")
+    if not api_key:
+        return []
 
-
-def _scrape_glassdoor_with_proxy(
-    term: str, loc: str, results: int, hours_old: int
-) -> list[dict]:
-    """
-    Run a single jobspy Glassdoor query through a free proxy.
-    Falls back gracefully if proxy fetch or scrape fails.
-    """
-    global _glassdoor_proxy
-
-    # Refresh proxy once per pipeline run (lazy init)
-    if _glassdoor_proxy is None:
-        _glassdoor_proxy = _get_free_proxy() or ""
-
-    proxy = _glassdoor_proxy or None
-
+    proxy = f"http://scraperapi:{api_key}@proxy-server.scraperapi.com:8001"
     try:
         df = jobspy_scrape(
             site_name      = ["glassdoor"],
@@ -119,155 +87,100 @@ def _scrape_glassdoor_with_proxy(
         if df is not None and not df.empty:
             return clean_jobs(df)
     except Exception as e:
-        log.warning(f"[glassdoor] '{term}' @ {loc} failed ({e}) — retrying with new proxy")
-        # Try once with a fresh proxy
-        _glassdoor_proxy = _get_free_proxy() or ""
-        try:
-            df = jobspy_scrape(
-                site_name      = ["glassdoor"],
-                search_term    = term,
-                location       = loc,
-                results_wanted = results,
-                hours_old      = hours_old,
-                country_indeed = "India",
-                proxy          = _glassdoor_proxy or None,
-                verbose        = 0,
-            )
-            if df is not None and not df.empty:
-                return clean_jobs(df)
-        except Exception as e2:
-            log.warning(f"[glassdoor] retry also failed: {e2}")
+        log.warning(f"[glassdoor] '{term}' @ {loc} failed: {e}")
     return []
 
 
 # ─────────────────────────────────────────────────────────────────
-# YC / Work at a Startup scraper
-# Extracts __NEXT_DATA__ JSON embedded in the page (Next.js pattern)
+# HN "Who is Hiring" scraper  (replaces broken YC/workatastartup)
+# Algolia HN API is free, no auth, returns real startup job posts.
+# Many posters are YC-backed companies.
 # ─────────────────────────────────────────────────────────────────
 
-_YC_HEADERS = {
-    "User-Agent":      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
-}
+_HN_HEADERS = {"User-Agent": "HireNext/1.0 job-aggregator"}
 
-def _scrape_yc() -> list[dict]:
+def _scrape_hn_hiring() -> list[dict]:
     """
-    Scrape Work at a Startup by extracting __NEXT_DATA__ from the HTML.
-    Falls back to a direct API call if the page approach fails.
+    1. Find the latest "Ask HN: Who is Hiring?" story via Algolia.
+    2. Fetch its comments (each is a job post).
+    3. Parse title, company, URL from the text.
     """
     jobs = []
     try:
-        resp = requests.get(
-            "https://www.workatastartup.com/jobs",
-            headers=_YC_HEADERS,
-            timeout=20,
+        # Step 1: find latest "Who is Hiring" story
+        search_resp = requests.get(
+            "https://hn.algolia.com/api/v1/search",
+            params={
+                "query":       "Ask HN: Who is hiring?",
+                "tags":        "story,ask_hn",
+                "hitsPerPage": "1",
+            },
+            headers=_HN_HEADERS,
+            timeout=15,
         )
-        resp.raise_for_status()
+        search_resp.raise_for_status()
+        hits = search_resp.json().get("hits", [])
+        if not hits:
+            log.warning("[hn] no 'Who is Hiring' story found")
+            return []
 
-        # Extract the embedded Next.js JSON payload
-        match = re.search(
-            r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
-            resp.text, re.DOTALL,
+        story_id    = hits[0]["objectID"]
+        story_title = hits[0].get("title", "")
+        log.info(f"[hn] found story {story_id}: {story_title}")
+
+        # Step 2: fetch full story with all comments
+        item_resp = requests.get(
+            f"https://hacker-news.firebaseio.com/v0/item/{story_id}.json",
+            headers=_HN_HEADERS,
+            timeout=15,
         )
-        if not match:
-            log.warning("[yc] __NEXT_DATA__ not found — trying direct API")
-            return _scrape_yc_api()
+        item_resp.raise_for_status()
+        story     = item_resp.json()
+        child_ids = story.get("kids", [])[:200]   # top 200 comments
 
-        page_data  = json.loads(match.group(1))
-        page_props = page_data.get("props", {}).get("pageProps", {})
+        log.info(f"[hn] fetching {len(child_ids)} job comments...")
 
-        # The jobs list can live under different keys depending on the page version
-        listings = (
-            page_props.get("jobs")
-            or page_props.get("jobListings")
-            or page_props.get("initialJobs")
-            or []
-        )
+        for comment_id in child_ids:
+            try:
+                c_resp = requests.get(
+                    f"https://hacker-news.firebaseio.com/v0/item/{comment_id}.json",
+                    headers=_HN_HEADERS,
+                    timeout=10,
+                )
+                c_resp.raise_for_status()
+                comment = c_resp.json()
 
-        log.info(f"[yc] __NEXT_DATA__ found {len(listings)} raw listings")
-
-        for item in listings:
-            company = item.get("company") or {}
-            if isinstance(company, str):
-                company_name = company
-            else:
-                company_name = company.get("name", "") or company.get("slug", "")
-
-            title   = item.get("title", "") or item.get("job_title", "") or ""
-            job_id  = item.get("id", "")
-            job_url = item.get("url", "") or (
-                f"https://www.workatastartup.com/jobs/{job_id}" if job_id else ""
-            )
-            desc    = item.get("description", "") or item.get("body", "") or ""
-            loc     = item.get("location", "") or item.get("remote_ok", "") or "Remote"
-            remote  = bool(item.get("remote") or item.get("remote_ok") or "remote" in str(loc).lower())
-
-            if not title or not company_name:
-                continue
-
-            jobs.append(extract({
-                "title":          title,
-                "company":        company_name,
-                "location":       str(loc),
-                "job_url":        job_url,
-                "description":    desc[:3000],
-                "date_posted":    str(item.get("created_at", "") or item.get("posted_at", ""))[:10],
-                "job_type":       "full-time",
-                "source":         "yc",
-                "is_remote":      remote,
-                "work_mode":      "remote" if remote else "onsite",
-                "company_domain": "startup",
-            }))
-
-        log.info(f"[yc] {len(jobs)} valid jobs extracted")
-    except Exception as e:
-        log.warning(f"[yc] page scraper failed: {e} — trying API fallback")
-        return _scrape_yc_api()
-
-    return jobs
-
-
-def _scrape_yc_api() -> list[dict]:
-    """
-    Fallback: call workatastartup.com's internal search API directly.
-    """
-    jobs = []
-    try:
-        # Internal API endpoint used by their React frontend
-        api_url = "https://www.workatastartup.com/companies/search"
-        params  = {
-            "hasActiveJob": "true",
-            "type":         "full_time",
-            "remote":       "only",
-        }
-        resp = requests.get(api_url, params=params, headers=_YC_HEADERS, timeout=20)
-        resp.raise_for_status()
-        data     = resp.json()
-        companies = data if isinstance(data, list) else data.get("companies", [])
-
-        log.info(f"[yc-api] {len(companies)} companies returned")
-
-        for co in companies[:100]:   # cap at 100 companies
-            co_name = co.get("name", "")
-            for job in (co.get("jobs") or []):
-                title   = job.get("title", "") or ""
-                job_id  = job.get("id", "")
-                job_url = job.get("url", "") or f"https://www.workatastartup.com/jobs/{job_id}"
-                desc    = job.get("description", "") or ""
-                loc     = job.get("location", "") or "Remote"
-                remote  = bool(job.get("remote") or "remote" in loc.lower())
-
-                if not title:
+                if comment.get("dead") or comment.get("deleted"):
                     continue
 
+                text = comment.get("text", "") or ""
+                # Strip HTML tags for plain-text parsing
+                plain = re.sub(r"<[^>]+>", " ", text).strip()
+
+                if len(plain) < 30:
+                    continue
+
+                # First line is usually "Company | Role | Location | ..."
+                first_line = plain.split("\n")[0][:200]
+                parts      = [p.strip() for p in re.split(r"\|", first_line)]
+
+                company = parts[0] if parts else "Unknown"
+                title   = parts[1] if len(parts) > 1 else "Software Engineer"
+                loc     = parts[2] if len(parts) > 2 else "Remote"
+
+                # Extract a URL from the text
+                url_match = re.search(r"https?://\S+", plain)
+                job_url   = url_match.group(0).rstrip(".,)>") if url_match else \
+                            f"https://news.ycombinator.com/item?id={comment_id}"
+
+                remote = "remote" in plain.lower()
+
                 jobs.append(extract({
-                    "title":          title,
-                    "company":        co_name,
-                    "location":       loc,
+                    "title":          title[:120],
+                    "company":        company[:100],
+                    "location":       loc[:80],
                     "job_url":        job_url,
-                    "description":    desc[:3000],
+                    "description":    plain[:3000],
                     "date_posted":    "",
                     "job_type":       "full-time",
                     "source":         "yc",
@@ -275,10 +188,13 @@ def _scrape_yc_api() -> list[dict]:
                     "work_mode":      "remote" if remote else "onsite",
                     "company_domain": "startup",
                 }))
+                time.sleep(0.05)   # be nice to HN API
+            except Exception:
+                continue
 
-        log.info(f"[yc-api] {len(jobs)} jobs extracted")
+        log.info(f"[hn] {len(jobs)} jobs parsed from HN hiring thread")
     except Exception as e:
-        log.warning(f"[yc-api] fallback also failed: {e}")
+        log.warning(f"[hn] scraper failed: {e}")
 
     return jobs
 
@@ -297,9 +213,6 @@ def run_pipeline(
     Expire stale jobs → Scrape all sources → Extract → Dedupe → Upsert.
     Returns a summary dict.
     """
-    global _glassdoor_proxy
-    _glassdoor_proxy = None   # reset proxy each pipeline run
-
     start = time.time()
 
     terms     = search_terms or TECH_SEARCH_TERMS
@@ -312,9 +225,8 @@ def run_pipeline(
     expired = expire_old_jobs(hours=48)
     log.info(f"[pipeline] Expired {expired} stale jobs (>48h old)")
 
-    # Separate Glassdoor from the main jobspy batch
-    main_sources      = [s for s in site_list if s != "glassdoor"]
-    run_glassdoor     = "glassdoor" in site_list
+    main_sources  = [s for s in site_list if s != "glassdoor"]
+    run_glassdoor = "glassdoor" in site_list and bool(os.getenv("SCRAPERAPI_KEY"))
 
     all_raw_jobs:   list[dict] = []
     failed_queries: list[str]  = []
@@ -323,7 +235,7 @@ def run_pipeline(
 
     log.info(
         f"[pipeline] START — {len(terms)} terms × {len(locs)} cities"
-        f" | main={main_sources} glassdoor={'yes' if run_glassdoor else 'no'}"
+        f" | main={main_sources} glassdoor={'yes (ScraperAPI)' if run_glassdoor else 'no (no SCRAPERAPI_KEY)'}"
     )
 
     # ── Step 1a: Indeed + LinkedIn ────────────────────────────────
@@ -352,28 +264,29 @@ def run_pipeline(
 
             time.sleep(delay)
 
-    # ── Step 1b: Glassdoor via proxy ──────────────────────────────
+    # ── Step 1b: Glassdoor via ScraperAPI ─────────────────────────
     if run_glassdoor:
-        log.info("[pipeline] Starting Glassdoor scrape via proxy...")
-        # Only scrape top 5 terms × top 3 cities to keep runtime reasonable
+        log.info("[pipeline] Starting Glassdoor scrape via ScraperAPI...")
         gd_terms = terms[:5]
         gd_locs  = locs[:3]
         for term in gd_terms:
             for loc in gd_locs:
                 log.info(f"[glassdoor] '{term}' @ {loc}")
-                gd = _scrape_glassdoor_with_proxy(term, loc, results_per_query, hours_old)
+                gd = _scrape_glassdoor(term, loc, results_per_query, hours_old)
                 if gd:
                     all_raw_jobs.extend(gd)
                     gd_jobs_total += len(gd)
                     log.info(f"[glassdoor]   → {len(gd)} jobs (gd total: {gd_jobs_total})")
                 time.sleep(delay)
         log.info(f"[glassdoor] Done — {gd_jobs_total} total jobs")
+    else:
+        log.info("[glassdoor] Skipped — add SCRAPERAPI_KEY secret to enable")
 
-    # ── Step 2: YC / Work at a Startup ───────────────────────────
-    log.info("[pipeline] Scraping YC / Work at a Startup...")
-    yc_jobs = _scrape_yc()
+    # ── Step 2: HN Who is Hiring (YC startup jobs) ───────────────
+    log.info("[pipeline] Scraping HN Who is Hiring (YC startup jobs)...")
+    yc_jobs = _scrape_hn_hiring()
     all_raw_jobs.extend(yc_jobs)
-    log.info(f"[pipeline] YC added {len(yc_jobs)} jobs (total: {len(all_raw_jobs)})")
+    log.info(f"[pipeline] HN/YC added {len(yc_jobs)} jobs (total: {len(all_raw_jobs)})")
 
     total_scraped = len(all_raw_jobs)
     log.info(f"[pipeline] Scraping done — {total_scraped} raw, {len(failed_queries)} failed queries")
