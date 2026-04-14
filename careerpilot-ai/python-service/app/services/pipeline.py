@@ -53,7 +53,7 @@ DEFAULT_LOCATIONS = [
     "Delhi", "Pune", "Chennai", "Noida", "Gurgaon",
 ]
 
-DEFAULT_SOURCES = ["indeed", "linkedin", "glassdoor"]
+DEFAULT_SOURCES = ["indeed", "linkedin", "glassdoor"]  # glassdoor may 403 on some runs
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -225,8 +225,8 @@ def run_pipeline(
     expired = expire_old_jobs(hours=48)
     log.info(f"[pipeline] Expired {expired} stale jobs (>48h old)")
 
-    main_sources  = [s for s in site_list if s != "glassdoor"]
-    run_glassdoor = "glassdoor" in site_list and bool(os.getenv("SCRAPERAPI_KEY"))
+    main_sources  = site_list   # all sources including glassdoor in one jobspy call
+    run_glassdoor = False       # separate glassdoor step not needed — it's in main_sources
 
     all_raw_jobs:   list[dict] = []
     failed_queries: list[str]  = []
