@@ -29,14 +29,8 @@ jobs:
       - name: Run scraper pipeline
         working-directory: careerpilot-ai/python-service
         env:
-          DATABASE_URL:           ${{ secrets.DATABASE_URL }}
-          DEFAULT_HOURS_OLD:      48
-          DEFAULT_RESULTS_WANTED: 25
-          SCRAPE_DELAY_SECONDS:   1.5
-        run: python -c "
-import logging, json
-logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s')
-from app.services.pipeline import run_pipeline
-result = run_pipeline()
-print(json.dumps(result, indent=2))
-"
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DEFAULT_HOURS_OLD: "48"
+          DEFAULT_RESULTS_WANTED: "25"
+          SCRAPE_DELAY_SECONDS: "1.5"
+        run: python run_scraper.py
