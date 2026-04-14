@@ -2,9 +2,10 @@ name: Scrape Jobs (Daily Refresh)
 
 on:
   schedule:
-    # Every day at 1:30 AM IST (8:00 PM UTC previous day)
     - cron: '0 20 * * *'
   workflow_dispatch:
+  repository_dispatch:
+    types: [scrape-jobs]
 
 jobs:
   scrape:
