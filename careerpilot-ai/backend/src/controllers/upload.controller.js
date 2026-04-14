@@ -1,9 +1,10 @@
-const fs              = require('fs');
-const resumeService   = require('../services/resume.service');
-const jobService      = require('../services/job.service');
-const feedbackService = require('../services/feedback.service');
-const response        = require('../utils/response');
-const logger          = require('../utils/logger');
+const fs                 = require('fs');
+const resumeService      = require('../services/resume.service');
+const jobService         = require('../services/job.service');
+const feedbackService    = require('../services/feedback.service');
+const subscriberService  = require('../services/subscriber.service');
+const response           = require('../utils/response');
+const logger             = require('../utils/logger');
 
 /**
  * POST /api/upload
@@ -38,13 +39,25 @@ exports.handleUpload = async (req, res, next) => {
     const pdfBuffer  = fs.readFileSync(filePath);
     const resumeText = await resumeService.extractText(pdfBuffer);
 
+    // ── Step 1b: Validate this PDF is actually a resume ──────
+    const validation = resumeService.validateResume(resumeText);
+    if (!validation.isValid) {
+      logger.warn(`Resume validation failed — score: ${validation.score}, file: "${req.file.originalname}"`);
+      return response.badRequest(res, 'The uploaded PDF does not appear to be a resume or CV. Please upload your actual resume.');
+    }
+    logger.info(`Resume validated — score: ${validation.score}, sections: ${validation.foundSections.join(', ')}`);
+
     // ── Step 2: Parse into structured profile ─────────────────
     const profile = await resumeService.parseProfile(resumeText, job_title.trim());
 
     // ── Steps 3 & 5: Fetch jobs and generate feedback in parallel
-    // Pass profile.skills so DB query filters by actual candidate skills
+    // Pass full profile signals so DB query can filter by skills, seniority, domain
     const [rawJobs, feedback] = await Promise.all([
-      jobService.fetchJobs(job_title.trim(), location?.trim() || 'Remote', profile.skills || []),
+      jobService.fetchJobs(job_title.trim(), location?.trim() || 'Remote', profile.skills || [], {
+        seniority:       profile.seniority,
+        domain:          profile.domain,
+        work_preference: profile.work_preference,
+      }),
       feedbackService.generate(resumeText),
     ]);
 
@@ -56,7 +69,10 @@ exports.handleUpload = async (req, res, next) => {
     // ── Cleanup uploaded file ─────────────────────────────────
     _cleanupFile(filePath);
 
-    return response.ok(res, { profile, matches, feedback }, 'Resume analysis complete');
+    // ── Save subscriber for 24h digest (fire-and-forget) ──────
+    subscriberService.saveSubscriber({ profile, matches }).catch(() => {});
+
+    return response.ok(res, { profile, matches, feedback, resume_text: resumeText }, 'Resume analysis complete');
   } catch (err) {
     _cleanupFile(filePath);
     next(err);

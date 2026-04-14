@@ -192,6 +192,11 @@ export default function UploadPage() {
                 </span>
               ))}
             </div>
+
+            {/* Privacy note */}
+            <p className="text-center text-xs" style={{ color: 'var(--text-muted)' }}>
+              Your email and profile are saved to send you daily job updates. Unsubscribe anytime.
+            </p>
           </div>
 
           {/* Pipeline loading overlay */}

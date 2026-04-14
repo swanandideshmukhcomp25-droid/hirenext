@@ -11,12 +11,15 @@ const uploadRoutes   = require('./routes/upload.routes');
 const jobRoutes      = require('./routes/job.routes');
 const feedbackRoutes = require('./routes/feedback.routes');
 const aiRoutes       = require('./routes/ai.routes');
+const generateRoutes = require('./routes/generate.routes');
+const cronRoutes     = require('./routes/cron');
+const shareRoutes    = require('./routes/share');
 const errorHandler   = require('./middleware/errorHandler');
 const logger         = require('./utils/logger');
 
-// ── Ensure uploads directory exists ──────────────────────────────
-const uploadDir = process.env.UPLOAD_DIR || './uploads';
-if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+// ── Ensure uploads directory exists (skip on Vercel — uses /tmp) ─
+const uploadDir = process.env.UPLOAD_DIR || (process.env.VERCEL ? '/tmp' : './uploads');
+if (!process.env.VERCEL && !fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
 const app  = express();
 const PORT = process.env.PORT || 5000;
@@ -52,10 +55,14 @@ app.get('/health', (req, res) => {
 });
 
 // ── API Routes ───────────────────────────────────────────────────
-app.use('/api/upload',   uploadRoutes);   // POST /api/upload
-app.use('/api/jobs',     jobRoutes);      // GET  /api/jobs  |  POST /api/job-match
-app.use('/api/feedback', feedbackRoutes); // POST /api/feedback
-app.use('/api',          aiRoutes);       // POST /api/linkedin  |  POST /api/email
+app.use('/api/upload',    uploadRoutes);   // POST /api/upload
+app.use('/api/jobs',      jobRoutes);      // GET  /api/jobs  |  POST /api/job-match  |  POST /api/strategy
+app.use('/api/feedback',  feedbackRoutes); // POST /api/feedback
+app.use('/api',           aiRoutes);       // POST /api/linkedin  |  POST /api/email
+app.use('/api/generate',  generateRoutes); // POST /api/generate/cold-email  |  POST /api/generate/linkedin-post
+app.use('/api/cron',      cronRoutes);     // POST /api/cron/daily-emails (Vercel cron)
+app.use('/unsubscribe',   cronRoutes);     // GET  /unsubscribe?id=...
+app.use('/api/share',     shareRoutes);    // POST /api/share  |  GET /api/share/:slug
 
 // ── 404 Handler ──────────────────────────────────────────────────
 app.use((req, res) => {
@@ -65,11 +72,13 @@ app.use((req, res) => {
 // ── Global Error Handler ─────────────────────────────────────────
 app.use(errorHandler);
 
-// ── Start Server ─────────────────────────────────────────────────
-app.listen(PORT, () => {
-  logger.info(`CareerPilot backend  →  http://localhost:${PORT}`);
-  logger.info(`AI mode              →  ${process.env.USE_AI === 'true' ? 'OpenAI (live)' : 'Dummy data'}`);
-  logger.info(`Jobs mode            →  ${process.env.USE_LIVE_JOBS === 'true' ? 'JobSpy (live)' : 'Dummy data'}`);
-});
+// ── Start Server (skip on Vercel — it handles the HTTP layer) ────
+if (!process.env.VERCEL) {
+  app.listen(PORT, () => {
+    logger.info(`HireNext backend  →  http://localhost:${PORT}`);
+    logger.info(`AI mode           →  ${process.env.USE_AI === 'true' ? 'OpenAI (live)' : 'Dummy data'}`);
+    logger.info(`Jobs mode         →  ${process.env.USE_LIVE_JOBS === 'true' ? 'JobSpy (live)' : 'Dummy data'}`);
+  });
+}
 
 module.exports = app; // for testing

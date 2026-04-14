@@ -3,7 +3,7 @@ const { DUMMY_COLD_EMAIL, DUMMY_LINKEDIN_POST } = require('../utils/dummy');
 const prompts                                   = require('../utils/prompts');
 const logger                                    = require('../utils/logger');
 
-const USE_AI = process.env.USE_AI === 'true';
+const USE_AI = process.env.USE_AI !== 'false';
 
 // ── Cold Email ────────────────────────────────────────────────────
 

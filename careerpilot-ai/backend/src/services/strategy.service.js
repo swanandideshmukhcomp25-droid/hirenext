@@ -3,7 +3,7 @@ const { DUMMY_STRATEGY }      = require('../utils/dummy');
 const prompts                 = require('../utils/prompts');
 const logger                  = require('../utils/logger');
 
-const USE_AI = process.env.USE_AI === 'true';
+const USE_AI = process.env.USE_AI !== 'false';
 
 /**
  * Generate a full Apply Strategy for a candidate + job pair.

@@ -2,7 +2,8 @@ const multer = require('multer');
 const path   = require('path');
 const fs     = require('fs');
 
-const UPLOAD_DIR     = process.env.UPLOAD_DIR || './uploads';
+// Vercel's filesystem is read-only except /tmp
+const UPLOAD_DIR     = process.env.UPLOAD_DIR || (process.env.VERCEL ? '/tmp' : './uploads');
 const MAX_SIZE_BYTES = (parseInt(process.env.MAX_FILE_SIZE_MB) || 5) * 1024 * 1024;
 
 // Ensure upload dir exists at startup

@@ -3,18 +3,28 @@
  * Tune here without touching service logic.
  */
 
-exports.RESUME_PARSER_SYSTEM = `You are an expert resume parser. Extract structured information from resume text and return valid JSON only. Be thorough — do not skip skills mentioned anywhere in the document.`;
+exports.RESUME_PARSER_SYSTEM = `You are an expert resume parser and career analyst. Extract structured information from resume text and return valid JSON only. Be thorough — do not skip skills mentioned anywhere in the document. Infer seniority and domain from the candidate's actual experience, not just keywords.`;
 
 exports.resumeParserUser = (resumeText, targetRole) => `
 Parse this resume and return JSON in exactly this schema:
 {
   "name": "full name or empty string",
   "email": "email address or empty string",
-  "skills": ["array of ALL technical and soft skills found anywhere in the document"],
+  "skills": ["array of ALL technical skills found anywhere in the document — use canonical names e.g. PostgreSQL not Postgres, JavaScript not JS"],
   "experience_years": <total years as a number>,
   "education": "highest degree and institution as a single string",
-  "target_role": "the role provided or inferred from resume"
+  "target_role": "the role provided or inferred from resume",
+  "seniority": "junior" | "mid" | "senior" | "lead" | "principal",
+  "domain": "the primary industry domain e.g. fintech, SaaS, AI/ML, e-commerce, healthcare, edtech, gaming, devtools, infra, security — or null if unclear",
+  "work_preference": "remote" | "hybrid" | "onsite" | null
 }
+
+Seniority guide:
+- junior:    0–2 years, or titles like Associate / Intern / Junior / Entry
+- mid:       2–5 years, no seniority qualifier in title
+- senior:    5–8 years, or explicit "Senior" / "Sr." in past titles
+- lead:      8+ years, or titles like Lead / Staff / Architect / Tech Lead / Manager
+- principal: 10+ years, or titles like Principal / Distinguished / VP Eng
 
 Target role the user is applying for: "${targetRole}"
 

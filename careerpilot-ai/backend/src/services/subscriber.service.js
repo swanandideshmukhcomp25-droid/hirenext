@@ -33,11 +33,11 @@ const headers = {
 
 /**
  * Save a subscriber after a successful resume upload.
- * Silently skips if email is missing (some resumes don't have one).
+ * Always saves — email is optional. If no email found, saves with null email.
  */
 async function saveSubscriber({ profile, matches }) {
-  const email = profile?.email?.trim();
-  if (!email || !email.includes('@')) return; // no email extracted — skip
+  const rawEmail = profile?.email?.trim();
+  const email = (rawEmail && rawEmail.includes('@')) ? rawEmail : null;
 
   try {
     await axios.post(

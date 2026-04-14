@@ -5,8 +5,8 @@ const prompts              = require('../utils/prompts');
 const { normalizeSkills, skillOverlap, extractSkillsFromText } = require('../utils/skillNormalizer');
 const logger               = require('../utils/logger');
 
-const USE_AI        = process.env.USE_AI        === 'true';
-const USE_LIVE_JOBS = process.env.USE_LIVE_JOBS === 'true';
+const USE_AI        = process.env.USE_AI        !== 'false';
+const USE_LIVE_JOBS = process.env.USE_LIVE_JOBS !== 'false';
 const PYTHON_URL    = process.env.PYTHON_SERVICE_URL || 'http://localhost:8001';
 
 // ── Fetch Jobs ─────────────────────────────────────────────────────
@@ -85,13 +85,17 @@ exports.scoreJobs = async (profile, jobs) => {
   const isRealJobs = jobs.length > 0 &&
     jobs[0].job_url !== (DUMMY_JOBS[0] && DUMMY_JOBS[0].job_url);
 
-  if (!USE_AI) {
+  // Always use deterministic scoring for dummy jobs — no point burning AI calls on fake data
+  if (!USE_AI || !isRealJobs) {
+    if (!isRealJobs) {
+      logger.info('scoreJobs -> dummy jobs detected, skipping AI scoring, returning DUMMY_MATCHES');
+      return DUMMY_MATCHES;
+    }
     logger.info(`scoreJobs -> multi-factor scoring (${jobs.length} jobs)`);
-    if (isRealJobs) return _multiFactorScore(profile, jobs);
-    return DUMMY_MATCHES;
+    return _multiFactorScore(profile, jobs);
   }
 
-  logger.info(`scoreJobs -> GPT scoring ${jobs.length} jobs`);
+  logger.info(`scoreJobs -> GPT scoring ${jobs.length} real jobs`);
   const BATCH = 5;
   const out   = [];
   for (let i = 0; i < jobs.length; i += BATCH) {

@@ -3,7 +3,7 @@ const { DUMMY_FEEDBACK } = require('../utils/dummy');
 const prompts            = require('../utils/prompts');
 const logger             = require('../utils/logger');
 
-const USE_AI = process.env.USE_AI === 'true';
+const USE_AI = process.env.USE_AI !== 'false';
 
 /**
  * Generate structured resume feedback.

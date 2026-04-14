@@ -5,7 +5,7 @@ const prompts            = require('../utils/prompts');
 const { normalizeSkills, extractSkillsFromText } = require('../utils/skillNormalizer');
 const logger             = require('../utils/logger');
 
-const USE_AI = process.env.USE_AI === 'true';
+const USE_AI = process.env.USE_AI !== 'false';
 
 /**
  * Extract raw text from a PDF buffer using pdf-parse.
@@ -116,6 +116,67 @@ function extractExperience(resumeText) {
   }
   return 0;
 }
+
+// ── Resume validator ──────────────────────────────────────────────
+
+const RESUME_SECTIONS = [
+  'experience', 'work experience', 'professional experience', 'employment history',
+  'education', 'academic background', 'qualifications',
+  'skills', 'technical skills', 'core competencies', 'key skills',
+  'projects', 'personal projects', 'academic projects',
+  'certifications', 'achievements', 'awards', 'accomplishments',
+  'summary', 'objective', 'career objective', 'profile', 'about me',
+  'internship', 'volunteer', 'extracurricular',
+];
+
+exports.validateResume = function (text) {
+  const lower = text.toLowerCase();
+  let score = 0;
+
+  // Section headers must appear as standalone headings (own line or word boundary)
+  // Prevents "product experience" or "matched skills" from matching
+  const foundSections = RESUME_SECTIONS.filter(h => {
+    const pattern = new RegExp(`(^|\\n)\\s*${h.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*(\\n|$|:)`, 'i');
+    return pattern.test(text);
+  });
+  score += Math.min(foundSections.length * 15, 60); // cap at 60
+
+  // Contact info — resumes always have at least one
+  const hasEmail    = /[\w.+-]+@[\w-]+\.[a-zA-Z]{2,}/.test(text);
+  const hasPhone    = /(\+?\d[\d\s\-().]{7,}\d)/.test(text);
+  const hasLinkedIn = /linkedin\.com/i.test(text);
+
+  if (hasEmail)    score += 25;
+  if (hasPhone)    score += 12;
+  if (hasLinkedIn) score += 8;
+
+  // Career / education dates (at least 2 year mentions)
+  const years = (text.match(/\b(19|20)\d{2}\b/g) || []).length;
+  if (years >= 2) score += 12;
+
+  // Tech / professional skill keywords
+  const detectedSkills = extractSkillsFromText(text);
+  if (detectedSkills.length >= 3) score += 15;
+  if (detectedSkills.length >= 8) score += 10;
+
+  // Name-like line near the top (Title Case, 2+ words, short)
+  const topLines = text.split('\n').map(l => l.trim()).filter(Boolean).slice(0, 6);
+  const hasName  = topLines.some(l => l.length > 3 && l.length < 55 && /^[A-Z][a-z]+([\s.][A-Z][a-z]+)+$/.test(l));
+  if (hasName) score += 8;
+
+  // Hard gate: a resume without any contact info is almost certainly not a resume
+  const hasContactInfo = hasEmail || hasPhone || hasLinkedIn;
+
+  // Penalise docs that look like invoices, articles, or product docs
+  const nonResumeSignals = ['abstract', 'introduction', 'conclusion', 'references', 'bibliography',
+    'invoice', 'receipt', 'total amount', 'chapter ', 'figure ', 'table of contents',
+    'roadmap', 'product roadmap', 'phase 1', 'phase 2', 'shipped', 'pending'];
+  const nonResumeHits = nonResumeSignals.filter(s => lower.includes(s)).length;
+  score -= nonResumeHits * 8;
+
+  const isValid = hasContactInfo && score >= 40;
+  return { isValid, score, foundSections };
+};
 
 // ── Basic parser (no AI) ───────────────────────────────────────────
 
