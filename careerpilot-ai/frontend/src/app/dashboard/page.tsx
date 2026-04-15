@@ -79,10 +79,10 @@ export default function DashboardPage() {
     setTimeout(() => setShareCopied(false), 2000);
   }
 
-  const strongMatches = data.matches.filter(m => m.match_score >= 80).length;
-  const avgScore      = data.matches.length
-    ? Math.round(data.matches.reduce((s, m) => s + m.match_score, 0) / data.matches.length)
-    : 0;
+  const applyToday    = data.matches.filter(m => m.match_score >= 80 && (m.missing_skills?.length ?? 0) <= 2);
+  const applyLater    = data.matches.filter(m => m.match_score >= 60 && (m.missing_skills?.length ?? 0) <= 5 && !(m.match_score >= 80 && (m.missing_skills?.length ?? 0) <= 2));
+  const skip          = data.matches.filter(m => !(m.match_score >= 60 && (m.missing_skills?.length ?? 0) <= 5));
+  const strongMatches = applyToday.length;
   const topMatch      = data.matches[0];
 
   if (!hydrated) return null;
@@ -138,31 +138,45 @@ export default function DashboardPage() {
             </div>
           )}
 
-          <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between md:gap-6">
+          <div className="flex flex-col gap-5">
             <div>
               <h1 className="text-xl sm:text-2xl md:text-3xl font-black text-white tracking-tight leading-tight">
                 {strongMatches > 0
-                  ? <>{strongMatches} jobs you should apply to <span className="text-indigo-400">right now</span></>
-                  : <>Your top {data.matches.length} job matches are ready</>
+                  ? <>Here's your verdict on <span style={{ color: '#a5b4fc' }}>{data.matches.length} jobs</span></>
+                  : <>Your verdict on {data.matches.length} jobs</>
                 }
               </h1>
-              <p className="mt-2 text-sm" style={{ color: 'var(--text-secondary)' }}>
-                {topMatch
-                  ? `Best fit: ${topMatch.title} at ${topMatch.company} · ${topMatch.match_score}% match`
-                  : `Based on your ${data.profile.target_role} profile and ${data.profile.experience_years} yrs exp`
-                }
+              <p className="mt-1.5 text-sm" style={{ color: 'var(--text-secondary)' }}>
+                {data.profile.name.split(' ')[0]} · {data.profile.target_role} · {data.profile.experience_years}y exp · resume score {data.feedback.overall_score}/100
               </p>
             </div>
 
-            {/* Quick stats */}
-            <div className="flex items-center gap-2 flex-wrap">
-              <StatChip value={data.matches.length} label="Jobs Found"     color="#818cf8" />
-              <StatChip value={strongMatches}        label="Apply Now"      color="#34d399" />
-              <StatChip value={data.feedback.overall_score} label="Resume Score" color="#fbbf24" suffix="/100" />
-              <StatChip value={avgScore}             label="Avg Match"      color="#c084fc" suffix="%" />
-              {appliedThisWeek > 0 && (
-                <StatChip value={appliedThisWeek} label="Applied" color="#34d399" suffix=" this wk" />
-              )}
+            {/* Verdict buckets — the whole point */}
+            <div className="grid grid-cols-3 gap-2 sm:gap-3">
+              <button
+                onClick={() => setActiveTab('jobs')}
+                className="flex flex-col items-center gap-1.5 px-2 py-3 sm:py-4 rounded-xl text-center transition-all hover:scale-[1.02] cursor-pointer"
+                style={{ background: 'rgba(52,211,153,0.08)', border: '1px solid rgba(52,211,153,0.25)' }}>
+                <span className="text-xl sm:text-2xl font-black" style={{ color: '#34d399' }}>{applyToday.length}</span>
+                <span className="text-[10px] sm:text-xs font-bold" style={{ color: '#34d399' }}>✅ Apply Today</span>
+                <span className="text-[9px] sm:text-[10px]" style={{ color: 'var(--text-muted)' }}>You're ready now</span>
+              </button>
+              <button
+                onClick={() => setActiveTab('jobs')}
+                className="flex flex-col items-center gap-1.5 px-2 py-3 sm:py-4 rounded-xl text-center transition-all hover:scale-[1.02] cursor-pointer"
+                style={{ background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.25)' }}>
+                <span className="text-xl sm:text-2xl font-black" style={{ color: '#fbbf24' }}>{applyLater.length}</span>
+                <span className="text-[10px] sm:text-xs font-bold" style={{ color: '#fbbf24' }}>⏳ Apply in 2 Weeks</span>
+                <span className="text-[9px] sm:text-[10px]" style={{ color: 'var(--text-muted)' }}>Close one skill gap</span>
+              </button>
+              <button
+                onClick={() => setActiveTab('jobs')}
+                className="flex flex-col items-center gap-1.5 px-2 py-3 sm:py-4 rounded-xl text-center transition-all hover:scale-[1.02] cursor-pointer"
+                style={{ background: 'rgba(239,68,68,0.06)', border: '1px solid rgba(239,68,68,0.2)' }}>
+                <span className="text-xl sm:text-2xl font-black" style={{ color: '#f87171' }}>{skip.length}</span>
+                <span className="text-[10px] sm:text-xs font-bold" style={{ color: '#f87171' }}>❌ Skip</span>
+                <span className="text-[9px] sm:text-[10px]" style={{ color: 'var(--text-muted)' }}>Better matches above</span>
+              </button>
             </div>
           </div>
 
