@@ -59,17 +59,15 @@ DEFAULT_SOURCES = ["indeed", "linkedin", "glassdoor"]  # glassdoor may 403 on so
 
 # ─────────────────────────────────────────────────────────────────
 # Naukri.com scraper — India's #1 job board
-# Uses Naukri's internal search API (same one their website uses).
-# No auth needed, returns structured JSON.
+# Strategy: warm a session via the homepage (picks up cookies + headers
+# that Naukri needs), then call the internal JSON API.
 # ─────────────────────────────────────────────────────────────────
 
-_NAUKRI_HEADERS = {
-    "User-Agent":  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "appid":       "109",
-    "systemid":    "109",
-    "Accept":      "application/json",
-    "Referer":     "https://www.naukri.com/",
-}
+_NAUKRI_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Safari/537.36"
+)
 
 _NAUKRI_LOCATION_MAP = {
     "Bangalore": "bangalore", "Hyderabad": "hyderabad", "Mumbai": "mumbai",
@@ -77,12 +75,40 @@ _NAUKRI_LOCATION_MAP = {
     "Noida": "noida", "Gurgaon": "gurgaon",
 }
 
+# One shared session — warmed once per pipeline run
+_naukri_session: requests.Session | None = None
+
+def _get_naukri_session() -> requests.Session:
+    """Return a warmed Naukri session (singleton per process)."""
+    global _naukri_session
+    if _naukri_session is not None:
+        return _naukri_session
+
+    s = requests.Session()
+    s.headers.update({
+        "User-Agent":      _NAUKRI_UA,
+        "Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection":      "keep-alive",
+    })
+    try:
+        # Warm session — Naukri sets essential cookies on this request
+        s.get("https://www.naukri.com/", timeout=15)
+        log.info("[naukri] Session warmed successfully")
+    except Exception as e:
+        log.warning(f"[naukri] Session warm failed (continuing anyway): {e}")
+
+    _naukri_session = s
+    return s
+
 def _scrape_naukri(term: str, loc: str, results: int = 20) -> list[dict]:
-    """Fetch jobs from Naukri's internal search API for one term+location."""
+    """Fetch jobs from Naukri's internal JSON API for one term+location."""
     jobs = []
     naukri_loc = _NAUKRI_LOCATION_MAP.get(loc, loc.lower())
+    session = _get_naukri_session()
     try:
-        resp = requests.get(
+        resp = session.get(
             "https://www.naukri.com/jobapi/v3/search",
             params={
                 "noOfResults":  results,
@@ -95,7 +121,14 @@ def _scrape_naukri(term: str, loc: str, results: int = 20) -> list[dict]:
                 "l":            naukri_loc,
                 "seoKey":       f"{term.replace(' ', '-')}-jobs-in-{naukri_loc}",
             },
-            headers=_NAUKRI_HEADERS,
+            headers={
+                "appid":          "109",
+                "systemid":       "Naukri",
+                "gid":            "LOCATION,FIELD_OF_STUDY,INDUSTRY,EDUCATION",
+                "Accept":         "application/json",
+                "Referer":        f"https://www.naukri.com/{term.replace(' ', '-')}-jobs-in-{naukri_loc}",
+                "x-requested-with": "XMLHttpRequest",
+            },
             timeout=15,
         )
         resp.raise_for_status()
