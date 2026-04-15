@@ -59,8 +59,10 @@ DEFAULT_SOURCES = ["indeed", "linkedin", "glassdoor"]  # glassdoor may 403 on so
 
 # ─────────────────────────────────────────────────────────────────
 # Naukri.com scraper — India's #1 job board
-# Strategy: warm a session via the homepage (picks up cookies + headers
-# that Naukri needs), then call the internal JSON API.
+# Strategy: scrape public HTML search pages (Google-indexed, cannot
+# block all IPs) and extract JSON-LD / embedded script data.
+# The internal JSON API (/jobapi/v3/search) blocks datacenter IPs
+# with 406, so we use the same pages a browser renders.
 # ─────────────────────────────────────────────────────────────────
 
 _NAUKRI_UA = (
@@ -75,101 +77,115 @@ _NAUKRI_LOCATION_MAP = {
     "Noida": "noida", "Gurgaon": "gurgaon",
 }
 
-# One shared session — warmed once per pipeline run
-_naukri_session: requests.Session | None = None
-
-def _get_naukri_session() -> requests.Session:
-    """Return a warmed Naukri session (singleton per process)."""
-    global _naukri_session
-    if _naukri_session is not None:
-        return _naukri_session
-
-    s = requests.Session()
-    s.headers.update({
-        "User-Agent":      _NAUKRI_UA,
-        "Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Connection":      "keep-alive",
-    })
-    try:
-        # Warm session — Naukri sets essential cookies on this request
-        s.get("https://www.naukri.com/", timeout=15)
-        log.info("[naukri] Session warmed successfully")
-    except Exception as e:
-        log.warning(f"[naukri] Session warm failed (continuing anyway): {e}")
-
-    _naukri_session = s
-    return s
+_NAUKRI_HTML_HEADERS = {
+    "User-Agent":      _NAUKRI_UA,
+    "Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection":      "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest":  "document",
+    "Sec-Fetch-Mode":  "navigate",
+    "Sec-Fetch-Site":  "none",
+    "Cache-Control":   "max-age=0",
+}
 
 def _scrape_naukri(term: str, loc: str, results: int = 20) -> list[dict]:
-    """Fetch jobs from Naukri's internal JSON API for one term+location."""
+    """
+    Scrape Naukri public HTML search pages and extract embedded JSON-LD job data.
+    URL pattern: https://www.naukri.com/{term-slug}-jobs-in-{city}
+    """
     jobs = []
     naukri_loc = _NAUKRI_LOCATION_MAP.get(loc, loc.lower())
-    session = _get_naukri_session()
+    term_slug  = term.strip().lower().replace(" ", "-")
+    url = f"https://www.naukri.com/{term_slug}-jobs-in-{naukri_loc}"
+
     try:
-        resp = session.get(
-            "https://www.naukri.com/jobapi/v3/search",
-            params={
-                "noOfResults":  results,
-                "urlType":      "search_by_keyword",
-                "searchType":   "adv",
-                "keyword":      term,
-                "location":     naukri_loc,
-                "pageNo":       1,
-                "k":            term,
-                "l":            naukri_loc,
-                "seoKey":       f"{term.replace(' ', '-')}-jobs-in-{naukri_loc}",
-            },
-            headers={
-                "appid":          "109",
-                "systemid":       "Naukri",
-                "gid":            "LOCATION,FIELD_OF_STUDY,INDUSTRY,EDUCATION",
-                "Accept":         "application/json",
-                "Referer":        f"https://www.naukri.com/{term.replace(' ', '-')}-jobs-in-{naukri_loc}",
-                "x-requested-with": "XMLHttpRequest",
-            },
-            timeout=15,
+        resp = requests.get(url, headers=_NAUKRI_HTML_HEADERS, timeout=20)
+        if resp.status_code != 200:
+            log.warning(f"[naukri] HTML {resp.status_code} for {url}")
+            return []
+
+        html = resp.text
+
+        # ── Extract JSON-LD JobPosting blocks ─────────────────────
+        ld_blocks = re.findall(
+            r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
+            html, re.DOTALL | re.IGNORECASE,
         )
-        resp.raise_for_status()
-        data     = resp.json()
-        listings = data.get("jobDetails", [])
+        for raw in ld_blocks:
+            try:
+                data = json.loads(raw.strip())
+                # Handle both single object and @graph array
+                items = data if isinstance(data, list) else \
+                        data.get("@graph", [data])
+                for item in items:
+                    if item.get("@type") != "JobPosting":
+                        continue
+                    title   = item.get("title", "") or ""
+                    company = (item.get("hiringOrganization") or {}).get("name", "") or ""
+                    loc_str = (item.get("jobLocation") or {}).get("address", {})
+                    if isinstance(loc_str, dict):
+                        loc_str = loc_str.get("addressLocality", loc)
+                    desc    = re.sub(r"<[^>]+>", " ", item.get("description", "") or "")
+                    job_url = item.get("url", url)
+                    skills_raw = item.get("skills", "") or ""
+                    skills  = [s.strip() for s in re.split(r"[,;]", skills_raw) if s.strip()] \
+                              if isinstance(skills_raw, str) else skills_raw
 
-        for item in listings:
-            title   = item.get("title", "") or ""
-            company = item.get("companyName", "") or ""
-            job_id  = item.get("jobId", "") or ""
-            job_url = item.get("jdURL", "") or f"https://www.naukri.com/job-listings-{job_id}"
-            desc    = item.get("jobDescription", "") or ""
-            loc_str = ", ".join(item.get("placeholders", [{}])[0].get("label", loc)
-                                if item.get("placeholders") else [loc])
-            skills  = [s.get("label", "") for s in item.get("tagsAndSkills", []) if s.get("label")]
-            salary  = item.get("placeholders", [{}])
-            exp_str = ""
-            for p in item.get("placeholders", []):
-                if p.get("type") == "experience":
-                    exp_str = p.get("label", "")
-                if p.get("type") == "salary":
-                    salary  = p.get("label", "")
+                    if not title or not company:
+                        continue
 
-            if not title or not company:
+                    jobs.append(extract({
+                        "title":          title,
+                        "company":        company,
+                        "location":       loc_str if isinstance(loc_str, str) else loc,
+                        "job_url":        job_url,
+                        "description":    desc[:3000],
+                        "date_posted":    item.get("datePosted", ""),
+                        "job_type":       "full-time",
+                        "source":         "naukri",
+                        "skills":         skills,
+                        "salary_raw":     str(item.get("baseSalary", "")),
+                        "is_remote":      "remote" in desc.lower() or "remote" in title.lower(),
+                        "work_mode":      "remote" if "remote" in title.lower() else "onsite",
+                        "company_domain": "tech",
+                    }))
+                    if len(jobs) >= results:
+                        break
+            except Exception:
                 continue
 
-            jobs.append(extract({
-                "title":          title,
-                "company":        company,
-                "location":       loc_str if isinstance(loc_str, str) else loc,
-                "job_url":        job_url if job_url.startswith("http") else f"https://www.naukri.com{job_url}",
-                "description":    desc[:3000],
-                "date_posted":    "",
-                "job_type":       "full-time",
-                "source":         "naukri",
-                "skills":         skills,
-                "salary_raw":     str(salary) if isinstance(salary, str) else "",
-                "is_remote":      "remote" in desc.lower() or "remote" in title.lower(),
-                "work_mode":      "remote" if "remote" in title.lower() else "onsite",
-                "company_domain": "tech",
-            }))
+        # ── Fallback: extract from embedded JS state ───────────────
+        if not jobs:
+            m = re.search(r'"jobDetails"\s*:\s*(\[.*?\])\s*[,}]', html, re.DOTALL)
+            if m:
+                try:
+                    listings = json.loads(m.group(1))
+                    for item in listings[:results]:
+                        title   = item.get("title", "") or ""
+                        company = item.get("companyName", "") or ""
+                        job_id  = item.get("jobId", "")
+                        job_url = item.get("jdURL") or f"https://www.naukri.com/job-listings-{job_id}"
+                        desc    = item.get("jobDescription", "") or ""
+                        skills  = [s.get("label", "") for s in item.get("tagsAndSkills", []) if s.get("label")]
+                        if not title or not company:
+                            continue
+                        jobs.append(extract({
+                            "title": title, "company": company, "location": loc,
+                            "job_url": job_url if job_url.startswith("http") else f"https://www.naukri.com{job_url}",
+                            "description": desc[:3000], "date_posted": "",
+                            "job_type": "full-time", "source": "naukri",
+                            "skills": skills, "salary_raw": "",
+                            "is_remote": "remote" in title.lower(),
+                            "work_mode": "remote" if "remote" in title.lower() else "onsite",
+                            "company_domain": "tech",
+                        }))
+                except Exception:
+                    pass
+
+        log.info(f"[naukri] '{term}' @ {loc} → {len(jobs)} jobs (HTML scrape)")
+
     except Exception as e:
         log.warning(f"[naukri] '{term}' @ {loc} failed: {e}")
     return jobs
