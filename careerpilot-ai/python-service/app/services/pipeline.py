@@ -6,8 +6,9 @@ Scrape → Extract → Deduplicate → Persist → Expire stale jobs
 Sources:
   - Indeed    (via python-jobspy)
   - LinkedIn  (via python-jobspy)
-  - Glassdoor (via python-jobspy + ScraperAPI residential proxy)
-  - HN Hiring (Hacker News "Who is Hiring" via Algolia — YC startup jobs)
+  - Glassdoor (via python-jobspy — may 403 on datacenter IPs)
+  - Naukri    (India's #1 job board — custom scraper via their internal API)
+  - YC        (Hacker News "Who is Hiring" via Algolia + Firebase HN API)
 
 Runs every 24 hours via GitHub Actions cron.
 """
@@ -57,128 +58,187 @@ DEFAULT_SOURCES = ["indeed", "linkedin", "glassdoor"]  # glassdoor may 403 on so
 
 
 # ─────────────────────────────────────────────────────────────────
-# Glassdoor via ScraperAPI
-# Free tier: 1000 calls/month, no credit card.
-# Sign up at scraperapi.com → copy API key → add as SCRAPERAPI_KEY
-# GitHub secret. Without the key, Glassdoor is silently skipped.
+# Naukri.com scraper — India's #1 job board
+# Uses Naukri's internal search API (same one their website uses).
+# No auth needed, returns structured JSON.
 # ─────────────────────────────────────────────────────────────────
 
-def _scrape_glassdoor(term: str, loc: str, results: int, hours_old: int) -> list[dict]:
-    """
-    Run a jobspy Glassdoor query routed through ScraperAPI.
-    ScraperAPI rotates residential IPs so Glassdoor can't block us.
-    """
-    api_key = os.getenv("SCRAPERAPI_KEY", "")
-    if not api_key:
-        return []
+_NAUKRI_HEADERS = {
+    "User-Agent":  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "appid":       "109",
+    "systemid":    "109",
+    "Accept":      "application/json",
+    "Referer":     "https://www.naukri.com/",
+}
 
-    proxy = f"http://scraperapi:{api_key}@proxy-server.scraperapi.com:8001"
+_NAUKRI_LOCATION_MAP = {
+    "Bangalore": "bangalore", "Hyderabad": "hyderabad", "Mumbai": "mumbai",
+    "Delhi": "delhi", "Pune": "pune", "Chennai": "chennai",
+    "Noida": "noida", "Gurgaon": "gurgaon",
+}
+
+def _scrape_naukri(term: str, loc: str, results: int = 20) -> list[dict]:
+    """Fetch jobs from Naukri's internal search API for one term+location."""
+    jobs = []
+    naukri_loc = _NAUKRI_LOCATION_MAP.get(loc, loc.lower())
     try:
-        df = jobspy_scrape(
-            site_name      = ["glassdoor"],
-            search_term    = term,
-            location       = loc,
-            results_wanted = results,
-            hours_old      = hours_old,
-            country_indeed = "India",
-            proxy          = proxy,
-            verbose        = 0,
+        resp = requests.get(
+            "https://www.naukri.com/jobapi/v3/search",
+            params={
+                "noOfResults":  results,
+                "urlType":      "search_by_keyword",
+                "searchType":   "adv",
+                "keyword":      term,
+                "location":     naukri_loc,
+                "pageNo":       1,
+                "k":            term,
+                "l":            naukri_loc,
+                "seoKey":       f"{term.replace(' ', '-')}-jobs-in-{naukri_loc}",
+            },
+            headers=_NAUKRI_HEADERS,
+            timeout=15,
         )
-        if df is not None and not df.empty:
-            return clean_jobs(df)
+        resp.raise_for_status()
+        data     = resp.json()
+        listings = data.get("jobDetails", [])
+
+        for item in listings:
+            title   = item.get("title", "") or ""
+            company = item.get("companyName", "") or ""
+            job_id  = item.get("jobId", "") or ""
+            job_url = item.get("jdURL", "") or f"https://www.naukri.com/job-listings-{job_id}"
+            desc    = item.get("jobDescription", "") or ""
+            loc_str = ", ".join(item.get("placeholders", [{}])[0].get("label", loc)
+                                if item.get("placeholders") else [loc])
+            skills  = [s.get("label", "") for s in item.get("tagsAndSkills", []) if s.get("label")]
+            salary  = item.get("placeholders", [{}])
+            exp_str = ""
+            for p in item.get("placeholders", []):
+                if p.get("type") == "experience":
+                    exp_str = p.get("label", "")
+                if p.get("type") == "salary":
+                    salary  = p.get("label", "")
+
+            if not title or not company:
+                continue
+
+            jobs.append(extract({
+                "title":          title,
+                "company":        company,
+                "location":       loc_str if isinstance(loc_str, str) else loc,
+                "job_url":        job_url if job_url.startswith("http") else f"https://www.naukri.com{job_url}",
+                "description":    desc[:3000],
+                "date_posted":    "",
+                "job_type":       "full-time",
+                "source":         "naukri",
+                "skills":         skills,
+                "salary_raw":     str(salary) if isinstance(salary, str) else "",
+                "is_remote":      "remote" in desc.lower() or "remote" in title.lower(),
+                "work_mode":      "remote" if "remote" in title.lower() else "onsite",
+                "company_domain": "tech",
+            }))
     except Exception as e:
-        log.warning(f"[glassdoor] '{term}' @ {loc} failed: {e}")
-    return []
+        log.warning(f"[naukri] '{term}' @ {loc} failed: {e}")
+    return jobs
 
 
 # ─────────────────────────────────────────────────────────────────
-# HN "Who is Hiring" scraper  (replaces broken YC/workatastartup)
-# Algolia HN API is free, no auth, returns real startup job posts.
-# Many posters are YC-backed companies.
+# YC / HN "Who is Hiring" scraper
+# Fetches the latest monthly HN hiring thread via Algolia + Firebase.
+# Relaxed parser captures most comment formats.
 # ─────────────────────────────────────────────────────────────────
 
 _HN_HEADERS = {"User-Agent": "HireNext/1.0 job-aggregator"}
 
 def _scrape_hn_hiring() -> list[dict]:
     """
-    1. Find the latest "Ask HN: Who is Hiring?" story via Algolia.
-    2. Fetch its comments (each is a job post).
-    3. Parse title, company, URL from the text.
+    1. Find latest 'Ask HN: Who is Hiring?' via Algolia.
+    2. Fetch all top-level comments (job posts) from Firebase HN API.
+    3. Parse with relaxed rules — captures pipe-separated AND free-text formats.
     """
     jobs = []
     try:
-        # Step 1: find latest "Who is Hiring" story
-        search_resp = requests.get(
+        # Step 1: latest hiring story
+        resp = requests.get(
             "https://hn.algolia.com/api/v1/search",
-            params={
-                "query":       "Ask HN: Who is hiring?",
-                "tags":        "story,ask_hn",
-                "hitsPerPage": "1",
-            },
-            headers=_HN_HEADERS,
-            timeout=15,
+            params={"query": "Ask HN: Who is hiring?", "tags": "story,ask_hn", "hitsPerPage": "1"},
+            headers=_HN_HEADERS, timeout=15,
         )
-        search_resp.raise_for_status()
-        hits = search_resp.json().get("hits", [])
+        resp.raise_for_status()
+        hits = resp.json().get("hits", [])
         if not hits:
-            log.warning("[hn] no 'Who is Hiring' story found")
-            return []
+            log.warning("[yc] no HN hiring story found"); return []
 
-        story_id    = hits[0]["objectID"]
-        story_title = hits[0].get("title", "")
-        log.info(f"[hn] found story {story_id}: {story_title}")
+        story_id = hits[0]["objectID"]
+        log.info(f"[yc] HN story {story_id}: {hits[0].get('title','')}")
 
-        # Step 2: fetch full story with all comments
-        item_resp = requests.get(
+        # Step 2: all child comment IDs
+        story = requests.get(
             f"https://hacker-news.firebaseio.com/v0/item/{story_id}.json",
-            headers=_HN_HEADERS,
-            timeout=15,
-        )
-        item_resp.raise_for_status()
-        story     = item_resp.json()
-        child_ids = story.get("kids", [])[:200]   # top 200 comments
+            headers=_HN_HEADERS, timeout=15,
+        ).json()
+        child_ids = story.get("kids", [])[:300]
+        log.info(f"[yc] fetching {len(child_ids)} comments...")
 
-        log.info(f"[hn] fetching {len(child_ids)} job comments...")
-
-        for comment_id in child_ids:
+        for cid in child_ids:
             try:
-                c_resp = requests.get(
-                    f"https://hacker-news.firebaseio.com/v0/item/{comment_id}.json",
-                    headers=_HN_HEADERS,
-                    timeout=10,
-                )
-                c_resp.raise_for_status()
-                comment = c_resp.json()
+                c = requests.get(
+                    f"https://hacker-news.firebaseio.com/v0/item/{cid}.json",
+                    headers=_HN_HEADERS, timeout=10,
+                ).json()
 
-                if comment.get("dead") or comment.get("deleted"):
+                if c.get("dead") or c.get("deleted") or not c.get("text"):
                     continue
 
-                text = comment.get("text", "") or ""
-                # Strip HTML tags for plain-text parsing
-                plain = re.sub(r"<[^>]+>", " ", text).strip()
+                # Strip HTML
+                plain = re.sub(r"<[^>]+>", " ", c["text"])
+                plain = re.sub(r"&amp;", "&", plain)
+                plain = re.sub(r"&lt;",  "<", plain)
+                plain = re.sub(r"&gt;",  ">", plain)
+                plain = re.sub(r"&#x27;","'", plain)
+                plain = plain.strip()
 
-                if len(plain) < 30:
+                if len(plain) < 40:
                     continue
 
-                # First line is usually "Company | Role | Location | ..."
-                first_line = plain.split("\n")[0][:200]
-                parts      = [p.strip() for p in re.split(r"\|", first_line)]
+                first_line = plain.split("\n")[0].strip()[:300]
 
-                company = parts[0] if parts else "Unknown"
-                title   = parts[1] if len(parts) > 1 else "Software Engineer"
-                loc     = parts[2] if len(parts) > 2 else "Remote"
+                # Format 1: "Company | Role | Location | ..."
+                if "|" in first_line:
+                    parts   = [p.strip() for p in first_line.split("|")]
+                    company = parts[0][:100]
+                    title   = parts[1][:120] if len(parts) > 1 else "Software Engineer"
+                    loc     = parts[2][:80]  if len(parts) > 2 else "Remote"
 
-                # Extract a URL from the text
-                url_match = re.search(r"https?://\S+", plain)
-                job_url   = url_match.group(0).rstrip(".,)>") if url_match else \
-                            f"https://news.ycombinator.com/item?id={comment_id}"
+                # Format 2: "Company (Location) | Role" or "Company - Role"
+                elif " - " in first_line or "(" in first_line:
+                    dash_split = re.split(r"\s[-–]\s", first_line, maxsplit=1)
+                    company = dash_split[0][:100]
+                    title   = dash_split[1][:120] if len(dash_split) > 1 else "Software Engineer"
+                    loc_m   = re.search(r"\(([^)]+)\)", first_line)
+                    loc     = loc_m.group(1)[:80] if loc_m else "Remote"
 
-                remote = "remote" in plain.lower()
+                # Format 3: free-text — use whole first line as description
+                else:
+                    # Try to extract company from bold/first word(s)
+                    words   = first_line.split()
+                    company = " ".join(words[:3])[:100] if words else "Startup"
+                    title   = "Software Engineer"
+                    loc     = "Remote"
+
+                # Skip obviously non-job comments
+                if len(company) < 2 or company.lower().startswith(("http", "i ", "we ", "our ")):
+                    continue
+
+                url_m   = re.search(r"https?://\S+", plain)
+                job_url = url_m.group(0).rstrip(".,)>;\"") if url_m else \
+                          f"https://news.ycombinator.com/item?id={cid}"
+                remote  = bool(re.search(r"\bremote\b", plain, re.I))
 
                 jobs.append(extract({
-                    "title":          title[:120],
-                    "company":        company[:100],
-                    "location":       loc[:80],
+                    "title":          title,
+                    "company":        company,
+                    "location":       loc,
                     "job_url":        job_url,
                     "description":    plain[:3000],
                     "date_posted":    "",
@@ -188,14 +248,13 @@ def _scrape_hn_hiring() -> list[dict]:
                     "work_mode":      "remote" if remote else "onsite",
                     "company_domain": "startup",
                 }))
-                time.sleep(0.05)   # be nice to HN API
+                time.sleep(0.03)
             except Exception:
                 continue
 
-        log.info(f"[hn] {len(jobs)} jobs parsed from HN hiring thread")
+        log.info(f"[yc] {len(jobs)} jobs parsed from HN thread")
     except Exception as e:
-        log.warning(f"[hn] scraper failed: {e}")
-
+        log.warning(f"[yc] scraper failed: {e}")
     return jobs
 
 
@@ -288,6 +347,26 @@ def run_pipeline(
     all_raw_jobs.extend(yc_jobs)
     log.info(f"[pipeline] HN/YC added {len(yc_jobs)} jobs (total: {len(all_raw_jobs)})")
 
+    # ── Step 2b: Naukri.com (India's #1 job board) ───────────────
+    naukri_jobs_total = 0
+    naukri_terms = [
+        "software engineer", "full stack developer",
+        "backend developer", "frontend developer",
+        "python developer", "react developer",
+        "data engineer", "data scientist",
+        "machine learning engineer", "devops engineer",
+    ]
+    naukri_locs = ["Bangalore", "Hyderabad", "Mumbai", "Delhi", "Pune"]
+    log.info(f"[naukri] Scraping {len(naukri_terms)} terms × {len(naukri_locs)} cities...")
+    for term in naukri_terms:
+        for loc in naukri_locs:
+            naukri_batch = _scrape_naukri(term, loc, results=20)
+            if naukri_batch:
+                all_raw_jobs.extend(naukri_batch)
+                naukri_jobs_total += len(naukri_batch)
+            time.sleep(0.5)
+    log.info(f"[naukri] Done — {naukri_jobs_total} jobs added (total: {len(all_raw_jobs)})")
+
     total_scraped = len(all_raw_jobs)
     log.info(f"[pipeline] Scraping done — {total_scraped} raw, {len(failed_queries)} failed queries")
 
@@ -298,6 +377,8 @@ def run_pipeline(
             "failed_queries": failed_queries,
             "duration_seconds": round(time.time() - start, 2),
             "queries_run": total_queries,
+            "yc_jobs": len(yc_jobs),
+            "naukri_jobs": naukri_jobs_total,
         }
 
     # ── Step 3: Deduplicate by URL ────────────────────────────────
@@ -342,5 +423,6 @@ def run_pipeline(
         "queries_run":      total_queries,
         "glassdoor_jobs":   gd_jobs_total,
         "yc_jobs":          len(yc_jobs),
-        "sources":          site_list + ["yc"],
+        "naukri_jobs":      naukri_jobs_total,
+        "sources":          site_list + ["yc", "naukri"],
     }
