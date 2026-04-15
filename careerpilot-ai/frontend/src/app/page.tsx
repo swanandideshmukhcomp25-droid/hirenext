@@ -273,41 +273,55 @@ export default function LandingPage() {
           style={{ background: 'radial-gradient(ellipse, rgba(99,102,241,0.12) 0%, transparent 70%)', filter: 'blur(60px)' }}/>
 
         <motion.div variants={stagger} initial="hidden" animate="show"
-          className="max-w-3xl mx-auto text-center mb-14">
+          className="max-w-3xl mx-auto text-center mb-12">
 
           {/* Live proof pill */}
           <motion.div variants={fadeUp}
             className="inline-flex items-center gap-2 mb-6 px-4 py-1.5 rounded-full text-xs font-semibold"
             style={{ background: 'rgba(52,211,153,0.08)', border: '1px solid rgba(52,211,153,0.2)', color: '#34d399' }}>
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse inline-block"/>
-            2,847 job seekers found their match this month
+            1,000+ live jobs · updated daily
           </motion.div>
 
-          {/* Headline — the new positioning */}
+          {/* Headline */}
           <motion.h1 variants={fadeUp}
             className="text-[2.2rem] sm:text-[3rem] md:text-[4.8rem] font-black leading-[1.04] tracking-[-0.03em] text-balance mb-5">
-            <span className="text-white">Stop applying to</span>
+            <span className="text-white">Should you apply?</span>
             <br/>
-            <span className="gradient-text">everything.</span>
-            <br/>
-            <span className="text-white">Get hired.</span>
+            <span className="gradient-text">We'll tell you.</span>
           </motion.h1>
 
-          {/* Sub — zero fluff */}
+          {/* Sub */}
           <motion.p variants={fadeUp}
-            className="text-base sm:text-xl leading-relaxed max-w-xl mx-auto mb-8 text-balance"
+            className="text-base sm:text-lg leading-relaxed max-w-lg mx-auto mb-8 text-balance"
             style={{ color: 'var(--text-secondary)' }}>
-            Upload your resume. In 60 seconds, we tell you exactly{' '}
-            <strong className="text-white">which 3 jobs to apply to</strong>{' '}
-            — and which 47 to skip.
+            Upload your resume. Get a verdict on every job — not a score, an actual answer.
           </motion.p>
 
-          {/* CTAs */}
+          {/* Verdict cards — the product in 3 lines */}
+          <motion.div variants={fadeUp}
+            className="grid grid-cols-3 gap-2 sm:gap-3 max-w-lg mx-auto mb-8">
+            {[
+              { emoji: '✅', label: 'Apply Today',        sub: 'You\'re ready now',        bg: 'rgba(52,211,153,0.08)',  border: 'rgba(52,211,153,0.25)',  text: '#34d399' },
+              { emoji: '⏳', label: 'Apply in 2 Weeks',  sub: 'Close one skill gap',      bg: 'rgba(251,191,36,0.08)',  border: 'rgba(251,191,36,0.25)',  text: '#fbbf24' },
+              { emoji: '❌', label: 'Skip',               sub: 'Better matches below',     bg: 'rgba(239,68,68,0.08)',   border: 'rgba(239,68,68,0.2)',    text: '#f87171' },
+            ].map(v => (
+              <div key={v.label}
+                className="flex flex-col items-center gap-1 px-2 py-3 rounded-xl"
+                style={{ background: v.bg, border: `1px solid ${v.border}` }}>
+                <span className="text-lg">{v.emoji}</span>
+                <p className="text-[11px] sm:text-xs font-bold leading-snug" style={{ color: v.text }}>{v.label}</p>
+                <p className="text-[9px] sm:text-[10px] leading-snug text-center" style={{ color: 'var(--text-muted)' }}>{v.sub}</p>
+              </div>
+            ))}
+          </motion.div>
+
+          {/* CTA */}
           <motion.div variants={fadeUp}
             className="flex flex-col sm:flex-row items-stretch sm:items-center justify-center gap-3 mb-6">
             <Link href="/upload"
               className="btn-primary text-[15px] px-7 py-3.5 rounded-xl glow-indigo text-center">
-              Find My Jobs Now
+              Get My Verdict
               <ArrowRight className="w-4 h-4"/>
             </Link>
             <a href="#problem"
