@@ -336,8 +336,8 @@ def run_pipeline(
     hours_old = int(os.getenv("DEFAULT_HOURS_OLD", 48))
     delay     = float(os.getenv("SCRAPE_DELAY_SECONDS", 1.5))
 
-    # ── Step 0: Expire jobs older than 48 hours ───────────────────
-    expired = expire_old_jobs(hours=48)
+    # ── Step 0: Expire jobs older than 72 hours ───────────────────
+    expired = expire_old_jobs(hours=72)
     log.info(f"[pipeline] Expired {expired} stale jobs (>48h old)")
 
     main_sources  = site_list   # all sources including glassdoor in one jobspy call

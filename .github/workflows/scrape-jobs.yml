@@ -1,8 +1,8 @@
-name: Scrape Jobs (Daily Refresh)
+name: Scrape Jobs (Every 3 Hours)
 
 on:
   schedule:
-    - cron: '0 20 * * *'
+    - cron: '0 */3 * * *'
   workflow_dispatch:
   repository_dispatch:
     types: [scrape-jobs]
@@ -30,7 +30,7 @@ jobs:
         working-directory: careerpilot-ai/python-service
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          DEFAULT_HOURS_OLD: "48"
+          DEFAULT_HOURS_OLD: "72"
           DEFAULT_RESULTS_WANTED: "25"
           SCRAPE_DELAY_SECONDS: "1.5"
         run: python run_scraper.py
