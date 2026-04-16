@@ -55,6 +55,13 @@ DEFAULT_LOCATIONS = [
 ]
 
 DEFAULT_SOURCES = ["indeed", "linkedin", "glassdoor"]  # glassdoor may 403 on some runs
+NAUKRI_TERMS = [
+    "software engineer", "full stack developer", "backend developer",
+    "frontend developer", "python developer", "react developer",
+    "data engineer", "data scientist", "machine learning engineer",
+    "devops engineer",
+]
+NAUKRI_LOCATIONS = ["Bangalore", "Hyderabad", "Mumbai", "Delhi", "Pune"]
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -396,24 +403,30 @@ def run_pipeline(
     all_raw_jobs.extend(yc_jobs)
     log.info(f"[pipeline] HN/YC added {len(yc_jobs)} jobs (total: {len(all_raw_jobs)})")
 
-    # ── Step 2b: Naukri.com (India's #1 job board) ───────────────
+    # ── Step 2b: Naukri.com via jobspy built-in scraper ──────────
     naukri_jobs_total = 0
-    naukri_terms = [
-        "software engineer", "full stack developer",
-        "backend developer", "frontend developer",
-        "python developer", "react developer",
-        "data engineer", "data scientist",
-        "machine learning engineer", "devops engineer",
-    ]
-    naukri_locs = ["Bangalore", "Hyderabad", "Mumbai", "Delhi", "Pune"]
-    log.info(f"[naukri] Scraping {len(naukri_terms)} terms × {len(naukri_locs)} cities...")
-    for term in naukri_terms:
-        for loc in naukri_locs:
-            naukri_batch = _scrape_naukri(term, loc, results=20)
-            if naukri_batch:
-                all_raw_jobs.extend(naukri_batch)
-                naukri_jobs_total += len(naukri_batch)
-            time.sleep(0.5)
+    log.info(f"[naukri] Scraping {len(NAUKRI_TERMS)} terms × {len(NAUKRI_LOCATIONS)} cities via jobspy...")
+    for term in NAUKRI_TERMS:
+        for loc in NAUKRI_LOCATIONS:
+            try:
+                df = jobspy_scrape(
+                    site_name      = ["naukri"],
+                    search_term    = term,
+                    location       = loc,
+                    results_wanted = 20,
+                    hours_old      = hours_old,
+                    verbose        = 0,
+                )
+                if df is not None and not df.empty:
+                    cleaned = clean_jobs(df)
+                    all_raw_jobs.extend(cleaned)
+                    naukri_jobs_total += len(cleaned)
+                    log.info(f"[naukri] '{term}' @ {loc} → {len(cleaned)} jobs")
+                else:
+                    log.info(f"[naukri] '{term}' @ {loc} → 0 jobs")
+            except Exception as e:
+                log.warning(f"[naukri] '{term}' @ {loc} failed: {e}")
+            time.sleep(delay)
     log.info(f"[naukri] Done — {naukri_jobs_total} jobs added (total: {len(all_raw_jobs)})")
 
     total_scraped = len(all_raw_jobs)
